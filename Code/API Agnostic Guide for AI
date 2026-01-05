@@ -1,0 +1,72 @@
+The Nexus Protocol: Universal Client-Side AI IntegrationVersion: 1.0 (Standalone Optimized)Objective: Implement a unified, resilient interface for interacting with multiple LLM providers (Google, OpenAI, Anthropic, Groq, xAI) directly from a client-side application without a backend server.1. Core PhilosophyTo build a "Nexus-class" handler, the system must adhere to three principles:Auto-Detection: The user should only need to paste a key; the system identifies the provider.Normalization: Different API shapes (headers, bodies, endpoints) must be abstracted into a single function signature.Resilience: The system must self-correct for common client-side issues (CORS blocks, Rate Limits, API deprecations).2. The Detective Module (Provider Identification)Logic: Identify the provider based on unique API key prefixes.Implementation:function detectProvider(apiKey) {
+    const key = apiKey.trim();
+    
+    // Pattern Matching Priority
+    if (key.startsWith('sk-ant')) return 'anthropic';      // Anthropic (Claude)
+    if (key.startsWith('sk-or'))  return 'openrouter';     // OpenRouter
+    if (key.startsWith('gsk_'))   return 'groq';           // Groq
+    if (key.startsWith('xai-'))   return 'xai';            // xAI (Grok)
+    if (key.startsWith('AIza'))   return 'gemini';         // Google (Gemini)
+    if (key.startsWith('sk-'))    return 'openai';         // OpenAI
+    
+    return 'unknown';
+}
+3. The Librarian Module (Model Registry)Logic: Maintain a mapping of "Best Default Model" for each provider. This must be updated frequently to avoid deprecation errors (e.g., Llama 3 -> 3.3).function getDefaultModel(provider) {
+    switch(provider) {
+        case 'groq':       return 'llama-3.3-70b-versatile'; // Fast, cheap, high quality
+        case 'openai':     return 'gpt-4o';                  // Industry standard
+        case 'anthropic':  return 'claude-3-5-sonnet-20240620'; // High nuance
+        case 'xai':        return 'grok-2-latest';           // Reasoning heavy
+        case 'gemini':     return 'gemini-1.5-flash';        // Balanced speed/cost
+        case 'openrouter': return 'google/gemini-pro-1.5';   // Router default
+        default:           return 'gpt-4o';
+    }
+}
+4. The Engine (Unified Request Handler)Function Signature: fetchAIResponse(provider, apiKey, systemPrompt, chatHistory)A. Endpoint & Header NormalizationGroup providers by their API architecture. Most follow the OpenAI standard, but Google and Anthropic are outliers.Group A (OpenAI-Like): OpenAI, Groq, Mistral, xAI, OpenRouter.URL: Varies (e.g., api.groq.com/...).Headers: Authorization: Bearer <KEY>Body: { model: "...", messages: [...] }Group B (Anthropic):URL: api.anthropic.com/v1/messagesHeaders: x-api-key: <KEY>, anthropic-version: ..., dangerously-allow-browser: trueBody: { model: "...", system: "...", messages: [...] } (Note: System prompt is a top-level field).Group C (Google Gemini):URL: generativelanguage.googleapis.com/.../models/<MODEL>:generateContent?key=<KEY>Headers: Content-Type: application/jsonBody: { contents: [...], system_instruction: { parts: [...] } }B. Critical Safety Nets (The "Resilience" Layer)1. The CORS Proxy FallbackProblem: Browsers block requests to xAI, Anthropic, and sometimes OpenAI from local files (file:// or local servers) due to CORS.Solution: If a NetworkError or TypeError occurs during fetch, immediately retry through a secure proxy.try {
+    response = await fetch(directUrl, options);
+} catch (err) {
+    if (isNetworkError(err)) {
+        console.warn("CORS Blocked. Engaging Proxy...");
+        const proxyUrl = '[https://corsproxy.io/](https://corsproxy.io/)?' + encodeURIComponent(directUrl);
+        response = await fetch(proxyUrl, options);
+    }
+}
+2. Gemini URL SanitizationProblem: Gemini model IDs often get passed as models/gemini-1.5-flash, but the API endpoint also contains models/, leading to models/models/gemini... 404 errors.Solution: Aggressively strip the prefix before building the URL.let cleanModel = modelId;
+while(cleanModel.startsWith('models/')) {
+    cleanModel = cleanModel.substring(7);
+}
+// URL = .../models/${cleanModel}:generateContent...
+3. Quota Exceeded Auto-DowngradeProblem: Users on Free Tier often hit 429 errors on "Pro" or "Preview" models.Solution: If a 429/404 is received, automatically switch the payload to use a lighter, more stable model (e.g., gemini-1.5-flash) and retry transparently.5. Implementation Template (Pseudo-Code)async function nexusFetch(provider, key, system, history) {
+    const model = getDefaultModel(provider);
+    
+    // 1. Construct Request Object (Headers, Body, URL) based on Provider Group
+    let request = buildRequest(provider, model, key, system, history);
+    
+    try {
+        // 2. Attempt Direct Connection
+        let response = await fetch(request.url, request.options);
+        
+        // 3. Handle Logical Errors (4xx, 5xx)
+        if (!response.ok) {
+            // Check for Rate Limit (429) -> Retry with fallback model
+            if (response.status === 429 || response.status === 404) {
+                request = downgradeModel(request); 
+                response = await fetch(request.url, request.options);
+            } else {
+                throw new Error(await response.text());
+            }
+        }
+        
+        return parseResponse(provider, await response.json());
+        
+    } catch (err) {
+        // 4. Handle Network Errors (CORS)
+        if (isCorsError(err)) {
+            // Retry via Proxy
+            const proxyUrl = '[https://corsproxy.io/](https://corsproxy.io/)?' + encodeURIComponent(request.url);
+            let response = await fetch(proxyUrl, request.options);
+            return parseResponse(provider, await response.json());
+        }
+        throw err;
+    }
+}
